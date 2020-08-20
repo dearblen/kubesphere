@@ -1,3 +1,19 @@
+/*
+Copyright 2020 KubeSphere Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package devops
 
 import (
@@ -81,6 +97,7 @@ type Pipeline struct {
 // GetPipeBranchRun & SearchPipelineRuns
 type PipelineRunList struct {
 	Items []PipelineRun `json:"items"`
+	Total int           `json:"totalItems"`
 }
 
 // GetBranchPipeRunNodes
@@ -1007,6 +1024,18 @@ type ResJson struct {
 						} `json:"value,omitempty"`
 					} `json:"arguments,omitempty"`
 				} `json:"agent,omitempty"`
+				Parameters struct {
+					Parameters []struct {
+						Name      string `json:"name,omitempty" description:"name"`
+						Arguments []struct {
+							Key   string `json:"key,omitempty" description:"key"`
+							Value struct {
+								IsLiteral bool   `json:"isLiteral,omitempty" description:"is literal or not"`
+								Value     string `json:"value,omitempty" description:"value"`
+							} `json:"value,omitempty"`
+						} `json:"arguments,omitempty"`
+					} `json:"parameters,omitempty"`
+				} `json:"parameters,omitempty"`
 			} `json:"pipeline,omitempty"`
 		} `json:"json,omitempty"`
 	} `json:"data,omitempty"`

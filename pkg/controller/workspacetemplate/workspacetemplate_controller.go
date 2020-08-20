@@ -18,14 +18,12 @@ package workspacetemplate
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/util/yaml"
@@ -39,13 +37,16 @@ import (
 	iamv1alpha2 "kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
 	tenantv1alpha1 "kubesphere.io/kubesphere/pkg/apis/tenant/v1alpha1"
 	tenantv1alpha2 "kubesphere.io/kubesphere/pkg/apis/tenant/v1alpha2"
+	typesv1beta1 "kubesphere.io/kubesphere/pkg/apis/types/v1beta1"
 	kubesphere "kubesphere.io/kubesphere/pkg/client/clientset/versioned"
 	iamv1alpha2informers "kubesphere.io/kubesphere/pkg/client/informers/externalversions/iam/v1alpha2"
 	tenantv1alpha1informers "kubesphere.io/kubesphere/pkg/client/informers/externalversions/tenant/v1alpha1"
 	tenantv1alpha2informers "kubesphere.io/kubesphere/pkg/client/informers/externalversions/tenant/v1alpha2"
+	typesv1beta1informers "kubesphere.io/kubesphere/pkg/client/informers/externalversions/types/v1beta1"
 	iamv1alpha2listers "kubesphere.io/kubesphere/pkg/client/listers/iam/v1alpha2"
 	tenantv1alpha1listers "kubesphere.io/kubesphere/pkg/client/listers/tenant/v1alpha1"
 	tenantv1alpha2listers "kubesphere.io/kubesphere/pkg/client/listers/tenant/v1alpha2"
+	typesv1beta1listers "kubesphere.io/kubesphere/pkg/client/listers/types/v1beta1"
 	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"time"
@@ -59,24 +60,20 @@ const (
 	controllerName        = "workspacetemplate-controller"
 )
 
-type Controller struct {
-	k8sClient                   kubernetes.Interface
-	ksClient                    kubesphere.Interface
-	workspaceTemplateInformer   tenantv1alpha2informers.WorkspaceTemplateInformer
-	workspaceTemplateLister     tenantv1alpha2listers.WorkspaceTemplateLister
-	workspaceTemplateSynced     cache.InformerSynced
-	workspaceRoleInformer       iamv1alpha2informers.WorkspaceRoleInformer
-	workspaceRoleLister         iamv1alpha2listers.WorkspaceRoleLister
-	workspaceRoleSynced         cache.InformerSynced
-	roleBaseInformer            iamv1alpha2informers.RoleBaseInformer
-	roleBaseLister              iamv1alpha2listers.RoleBaseLister
-	roleBaseSynced              cache.InformerSynced
-	workspaceInformer           tenantv1alpha1informers.WorkspaceInformer
-	workspaceLister             tenantv1alpha1listers.WorkspaceLister
-	workspaceSynced             cache.InformerSynced
-	fedWorkspaceCache           cache.Store
-	fedWorkspaceCacheController cache.Controller
-	multiClusterEnabled         bool
+type controller struct {
+	k8sClient                kubernetes.Interface
+	ksClient                 kubesphere.Interface
+	workspaceTemplateLister  tenantv1alpha2listers.WorkspaceTemplateLister
+	workspaceTemplateSynced  cache.InformerSynced
+	workspaceRoleLister      iamv1alpha2listers.WorkspaceRoleLister
+	workspaceRoleSynced      cache.InformerSynced
+	roleBaseLister           iamv1alpha2listers.RoleBaseLister
+	roleBaseSynced           cache.InformerSynced
+	workspaceLister          tenantv1alpha1listers.WorkspaceLister
+	workspaceSynced          cache.InformerSynced
+	federatedWorkspaceLister typesv1beta1listers.FederatedWorkspaceLister
+	federatedWorkspaceSynced cache.InformerSynced
+	multiClusterEnabled      bool
 	// workqueue is a rate limited work queue. This is used to queue work to be
 	// processed instead of performing it as soon as a change happens. This
 	// means we can ensure we only process a fixed amount of resources at a
@@ -88,56 +85,57 @@ type Controller struct {
 	recorder record.EventRecorder
 }
 
-func NewController(k8sClient kubernetes.Interface, ksClient kubesphere.Interface, workspaceTemplateInformer tenantv1alpha2informers.WorkspaceTemplateInformer,
-	workspaceInformer tenantv1alpha1informers.WorkspaceInformer, roleBaseInformer iamv1alpha2informers.RoleBaseInformer, workspaceRoleInformer iamv1alpha2informers.WorkspaceRoleInformer,
-	fedWorkspaceCache cache.Store, fedWorkspaceCacheController cache.Controller, multiClusterEnabled bool) *Controller {
-	// Create event broadcaster
-	// Add sample-controller types to the default Kubernetes Scheme so Events can be
-	// logged for sample-controller types.
+func NewController(k8sClient kubernetes.Interface, ksClient kubesphere.Interface,
+	workspaceTemplateInformer tenantv1alpha2informers.WorkspaceTemplateInformer,
+	workspaceInformer tenantv1alpha1informers.WorkspaceInformer,
+	roleBaseInformer iamv1alpha2informers.RoleBaseInformer,
+	workspaceRoleInformer iamv1alpha2informers.WorkspaceRoleInformer,
+	federatedWorkspaceInformer typesv1beta1informers.FederatedWorkspaceInformer,
+	multiClusterEnabled bool) *controller {
 
 	klog.V(4).Info("Creating event broadcaster")
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(klog.Infof)
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: k8sClient.CoreV1().Events("")})
 	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: controllerName})
-	ctl := &Controller{
-		k8sClient:                   k8sClient,
-		ksClient:                    ksClient,
-		workspaceTemplateInformer:   workspaceTemplateInformer,
-		workspaceTemplateLister:     workspaceTemplateInformer.Lister(),
-		workspaceTemplateSynced:     workspaceTemplateInformer.Informer().HasSynced,
-		workspaceInformer:           workspaceInformer,
-		workspaceLister:             workspaceInformer.Lister(),
-		workspaceSynced:             workspaceInformer.Informer().HasSynced,
-		workspaceRoleInformer:       workspaceRoleInformer,
-		workspaceRoleLister:         workspaceRoleInformer.Lister(),
-		workspaceRoleSynced:         workspaceRoleInformer.Informer().HasSynced,
-		roleBaseInformer:            roleBaseInformer,
-		roleBaseLister:              roleBaseInformer.Lister(),
-		roleBaseSynced:              roleBaseInformer.Informer().HasSynced,
-		fedWorkspaceCache:           fedWorkspaceCache,
-		fedWorkspaceCacheController: fedWorkspaceCacheController,
-		multiClusterEnabled:         multiClusterEnabled,
-		workqueue:                   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "WorkspaceTemplate"),
-		recorder:                    recorder,
+	ctl := &controller{
+		k8sClient:               k8sClient,
+		ksClient:                ksClient,
+		workspaceTemplateLister: workspaceTemplateInformer.Lister(),
+		workspaceTemplateSynced: workspaceTemplateInformer.Informer().HasSynced,
+		workspaceLister:         workspaceInformer.Lister(),
+		workspaceSynced:         workspaceInformer.Informer().HasSynced,
+		workspaceRoleLister:     workspaceRoleInformer.Lister(),
+		workspaceRoleSynced:     workspaceRoleInformer.Informer().HasSynced,
+		roleBaseLister:          roleBaseInformer.Lister(),
+		roleBaseSynced:          roleBaseInformer.Informer().HasSynced,
+		multiClusterEnabled:     multiClusterEnabled,
+		workqueue:               workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "WorkspaceTemplate"),
+		recorder:                recorder,
 	}
+
+	if multiClusterEnabled {
+		ctl.federatedWorkspaceLister = federatedWorkspaceInformer.Lister()
+		ctl.federatedWorkspaceSynced = federatedWorkspaceInformer.Informer().HasSynced
+	}
+
 	klog.Info("Setting up event handlers")
 	workspaceTemplateInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: ctl.enqueueClusterRole,
+		AddFunc: ctl.enqueueWorkspaceTemplate,
 		UpdateFunc: func(old, new interface{}) {
-			ctl.enqueueClusterRole(new)
+			ctl.enqueueWorkspaceTemplate(new)
 		},
-		DeleteFunc: ctl.enqueueClusterRole,
+		DeleteFunc: ctl.enqueueWorkspaceTemplate,
 	})
 	return ctl
 }
 
-func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
+func (c *controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	defer utilruntime.HandleCrash()
 	defer c.workqueue.ShutDown()
 
 	// Start the informer factories to begin populating the informer caches
-	klog.Info("Starting GlobalRole controller")
+	klog.Info("Starting WorkspaceTemplate controller")
 
 	// Wait for the caches to be synced before starting workers
 	klog.Info("Waiting for informer caches to sync")
@@ -145,7 +143,7 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	synced := make([]cache.InformerSynced, 0)
 	synced = append(synced, c.workspaceTemplateSynced, c.workspaceSynced, c.workspaceRoleSynced, c.roleBaseSynced)
 	if c.multiClusterEnabled {
-		synced = append(synced, c.fedWorkspaceCacheController.HasSynced)
+		synced = append(synced, c.federatedWorkspaceSynced)
 	}
 	if ok := cache.WaitForCacheSync(stopCh, synced...); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
@@ -163,7 +161,7 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	return nil
 }
 
-func (c *Controller) enqueueClusterRole(obj interface{}) {
+func (c *controller) enqueueWorkspaceTemplate(obj interface{}) {
 	var key string
 	var err error
 	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
@@ -173,51 +171,31 @@ func (c *Controller) enqueueClusterRole(obj interface{}) {
 	c.workqueue.Add(key)
 }
 
-func (c *Controller) runWorker() {
+func (c *controller) runWorker() {
 	for c.processNextWorkItem() {
 	}
 }
 
-func (c *Controller) processNextWorkItem() bool {
+func (c *controller) processNextWorkItem() bool {
 	obj, shutdown := c.workqueue.Get()
 
 	if shutdown {
 		return false
 	}
 
-	// We wrap this block in a func so we can defer c.workqueue.Done.
 	err := func(obj interface{}) error {
-		// We call Done here so the workqueue knows we have finished
-		// processing this item. We also must remember to call Forget if we
-		// do not want this work item being re-queued. For example, we do
-		// not call Forget if a transient error occurs, instead the item is
-		// put back on the workqueue and attempted again after a back-off
-		// period.
 		defer c.workqueue.Done(obj)
 		var key string
 		var ok bool
-		// We expect strings to come off the workqueue. These are of the
-		// form namespace/name. We do this as the delayed nature of the
-		// workqueue means the items in the informer cache may actually be
-		// more up to date that when the item was initially put onto the
-		// workqueue.
 		if key, ok = obj.(string); !ok {
-			// As the item in the workqueue is actually invalid, we call
-			// Forget here else we'd go into a loop of attempting to
-			// process a work item that is invalid.
 			c.workqueue.Forget(obj)
 			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
 			return nil
 		}
-		// Run the reconcile, passing it the namespace/name string of the
-		// Foo resource to be synced.
 		if err := c.reconcile(key); err != nil {
-			// Put the item back on the workqueue to handle any transient errors.
 			c.workqueue.AddRateLimited(key)
 			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
 		}
-		// Finally, if no error occurs we Forget this item so it does not
-		// get queued again until another change happens.
 		c.workqueue.Forget(obj)
 		klog.Infof("Successfully synced %s:%s", "key", key)
 		return nil
@@ -234,8 +212,7 @@ func (c *Controller) processNextWorkItem() bool {
 // syncHandler compares the actual state with the desired, and attempts to
 // converge the two. It then updates the Status block of the Foo resource
 // with the current status of the resource.
-func (c *Controller) reconcile(key string) error {
-
+func (c *controller) reconcile(key string) error {
 	workspaceTemplate, err := c.workspaceTemplateLister.Get(key)
 	if err != nil {
 		// The user may no longer exist, in which case we stop
@@ -249,6 +226,11 @@ func (c *Controller) reconcile(key string) error {
 	}
 
 	if err = c.initRoles(workspaceTemplate); err != nil {
+		klog.Error(err)
+		return err
+	}
+
+	if err = c.initManagerRoleBinding(workspaceTemplate); err != nil {
 		klog.Error(err)
 		return err
 	}
@@ -269,126 +251,57 @@ func (c *Controller) reconcile(key string) error {
 	return nil
 }
 
-func (c *Controller) Start(stopCh <-chan struct{}) error {
+func (c *controller) Start(stopCh <-chan struct{}) error {
 	return c.Run(4, stopCh)
 }
 
-func (c *Controller) multiClusterSync(workspaceTemplate *tenantv1alpha2.WorkspaceTemplate) error {
-
-	obj, exist, err := c.fedWorkspaceCache.GetByKey(workspaceTemplate.Name)
-	if !exist {
-		return c.createFederatedWorkspace(workspaceTemplate)
-	}
+func (c *controller) multiClusterSync(workspaceTemplate *tenantv1alpha2.WorkspaceTemplate) error {
+	// multi cluster environment, synchronize workspaces with kubefed
+	federatedWorkspace, err := c.federatedWorkspaceLister.Get(workspaceTemplate.Name)
 	if err != nil {
+		// create federatedworkspace if not found
+		if errors.IsNotFound(err) {
+			return c.createFederatedWorkspace(workspaceTemplate)
+		}
 		klog.Error(err)
 		return err
 	}
-
-	var fedWorkspace tenantv1alpha2.FederatedWorkspace
-
-	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj.(*unstructured.Unstructured).Object, &fedWorkspace); err != nil {
-		klog.Error(err)
-		return err
-	}
-
-	if !reflect.DeepEqual(fedWorkspace.Spec.Template.Spec, workspaceTemplate.Spec.WorkspaceSpec) ||
-		!reflect.DeepEqual(fedWorkspace.Labels, workspaceTemplate.Labels) ||
-		!reflect.DeepEqual(fedWorkspace.Annotations, workspaceTemplate.Annotations) ||
-		!reflect.DeepEqual(fedWorkspace.Spec.Overrides, workspaceTemplate.Spec.Overrides) {
-
-		fedWorkspace.Spec.Template.Spec = workspaceTemplate.Spec.WorkspaceSpec
-		fedWorkspace.Annotations = workspaceTemplate.Annotations
-		fedWorkspace.Labels = workspaceTemplate.Labels
-		fedWorkspace.Spec.Overrides = workspaceTemplate.Spec.Overrides
-
-		return c.updateFederatedWorkspace(&fedWorkspace)
+	// update spec
+	if !reflect.DeepEqual(federatedWorkspace.Spec, workspaceTemplate.Spec) {
+		federatedWorkspace.Spec = workspaceTemplate.Spec
+		if err = c.updateFederatedWorkspace(federatedWorkspace); err != nil {
+			klog.Error(err)
+			return err
+		}
 	}
 
 	return nil
 }
 
-func (c *Controller) createFederatedWorkspace(workspaceTemplate *tenantv1alpha2.WorkspaceTemplate) error {
-	clusters := make([]tenantv1alpha2.Cluster, 0)
-	for _, cluster := range workspaceTemplate.Spec.Clusters {
-		clusters = append(clusters, tenantv1alpha2.Cluster{Name: cluster})
-	}
-
-	federatedWorkspace := &tenantv1alpha2.FederatedWorkspace{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       tenantv1alpha2.FedWorkspaceKind,
-			APIVersion: tenantv1alpha2.FedWorkspaceResource.Group + "/" + tenantv1alpha2.FedWorkspaceResource.Version,
-		},
+func (c *controller) createFederatedWorkspace(workspaceTemplate *tenantv1alpha2.WorkspaceTemplate) error {
+	federatedWorkspace := &typesv1beta1.FederatedWorkspace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: workspaceTemplate.Name,
 		},
-		Spec: tenantv1alpha2.FederatedWorkspaceSpec{
-			Template: tenantv1alpha2.Template{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      workspaceTemplate.Labels,
-					Annotations: workspaceTemplate.Annotations,
-				},
-				Spec: workspaceTemplate.Spec.WorkspaceSpec,
-			},
-			Placement: tenantv1alpha2.Placement{
-				Clusters: clusters,
-			},
-			Overrides: workspaceTemplate.Spec.Overrides,
-		},
+		Spec: workspaceTemplate.Spec,
 	}
 
-	err := controllerutil.SetControllerReference(workspaceTemplate, federatedWorkspace, scheme.Scheme)
-	if err != nil {
+	if err := controllerutil.SetControllerReference(workspaceTemplate, federatedWorkspace, scheme.Scheme); err != nil {
 		return err
 	}
 
-	data, err := json.Marshal(federatedWorkspace)
-	if err != nil {
-		return err
-	}
-
-	cli := c.k8sClient.(*kubernetes.Clientset)
-	err = cli.RESTClient().Post().
-		AbsPath(fmt.Sprintf("/apis/%s/%s/%s", tenantv1alpha2.FedWorkspaceResource.Group,
-			tenantv1alpha2.FedWorkspaceResource.Version, tenantv1alpha2.FedWorkspaceResource.Name)).
-		Body(data).
-		Do().Error()
-
-	if err != nil {
+	if _, err := c.ksClient.TypesV1beta1().FederatedWorkspaces().Create(federatedWorkspace); err != nil {
 		if errors.IsAlreadyExists(err) {
 			return nil
 		}
+		klog.Error(err)
 		return err
 	}
 
 	return nil
 }
 
-func (c *Controller) updateFederatedWorkspace(fedWorkspace *tenantv1alpha2.FederatedWorkspace) error {
-
-	data, err := json.Marshal(fedWorkspace)
-	if err != nil {
-		return err
-	}
-
-	cli := c.k8sClient.(*kubernetes.Clientset)
-	err = cli.RESTClient().Put().
-		AbsPath(fmt.Sprintf("/apis/%s/%s/%s/%s", tenantv1alpha2.FedWorkspaceResource.Group,
-			tenantv1alpha2.FedWorkspaceResource.Version, tenantv1alpha2.FedWorkspaceResource.Name,
-			fedWorkspace.Name)).
-		Body(data).
-		Do().Error()
-
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return nil
-		}
-		return err
-	}
-
-	return nil
-}
-
-func (c *Controller) sync(workspaceTemplate *tenantv1alpha2.WorkspaceTemplate) error {
+func (c *controller) sync(workspaceTemplate *tenantv1alpha2.WorkspaceTemplate) error {
 	workspace, err := c.workspaceLister.Get(workspaceTemplate.Name)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -398,14 +311,14 @@ func (c *Controller) sync(workspaceTemplate *tenantv1alpha2.WorkspaceTemplate) e
 		return err
 	}
 
-	if !reflect.DeepEqual(workspace.Spec, workspaceTemplate.Spec.WorkspaceSpec) ||
-		!reflect.DeepEqual(workspace.Labels, workspaceTemplate.Labels) ||
-		!reflect.DeepEqual(workspace.Annotations, workspaceTemplate.Annotations) {
+	if !reflect.DeepEqual(workspace.Spec, workspaceTemplate.Spec.Template.Spec) ||
+		!reflect.DeepEqual(workspace.Labels, workspaceTemplate.Spec.Template.Labels) ||
+		!reflect.DeepEqual(workspace.Annotations, workspaceTemplate.Spec.Template.Annotations) {
 
 		workspace = workspace.DeepCopy()
-		workspace.Spec = workspaceTemplate.Spec.WorkspaceSpec
-		workspace.Annotations = workspaceTemplate.Annotations
-		workspace.Labels = workspaceTemplate.Labels
+		workspace.Spec = workspaceTemplate.Spec.Template.Spec
+		workspace.Labels = workspaceTemplate.Spec.Template.Labels
+		workspace.Annotations = workspaceTemplate.Spec.Template.Annotations
 
 		return c.updateWorkspace(workspace)
 	}
@@ -413,14 +326,14 @@ func (c *Controller) sync(workspaceTemplate *tenantv1alpha2.WorkspaceTemplate) e
 	return nil
 }
 
-func (c *Controller) createWorkspace(workspaceTemplate *tenantv1alpha2.WorkspaceTemplate) error {
+func (c *controller) createWorkspace(workspaceTemplate *tenantv1alpha2.WorkspaceTemplate) error {
 	workspace := &tenantv1alpha1.Workspace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        workspaceTemplate.Name,
-			Labels:      workspaceTemplate.Labels,
-			Annotations: workspaceTemplate.Annotations,
+			Labels:      workspaceTemplate.Spec.Template.Labels,
+			Annotations: workspaceTemplate.Spec.Template.Annotations,
 		},
-		Spec: workspaceTemplate.Spec.WorkspaceSpec,
+		Spec: workspaceTemplate.Spec.Template.Spec,
 	}
 
 	err := controllerutil.SetControllerReference(workspaceTemplate, workspace, scheme.Scheme)
@@ -440,7 +353,7 @@ func (c *Controller) createWorkspace(workspaceTemplate *tenantv1alpha2.Workspace
 	return nil
 }
 
-func (c *Controller) updateWorkspace(workspace *tenantv1alpha1.Workspace) error {
+func (c *controller) updateWorkspace(workspace *tenantv1alpha1.Workspace) error {
 	_, err := c.ksClient.TenantV1alpha1().Workspaces().Update(workspace)
 	if err != nil {
 		klog.Error(err)
@@ -449,25 +362,26 @@ func (c *Controller) updateWorkspace(workspace *tenantv1alpha1.Workspace) error 
 	return nil
 }
 
-func (r *Controller) initRoles(workspace *tenantv1alpha2.WorkspaceTemplate) error {
-	roleBases, err := r.roleBaseLister.List(labels.Everything())
+func (c *controller) initRoles(workspace *tenantv1alpha2.WorkspaceTemplate) error {
+	roleBases, err := c.roleBaseLister.List(labels.Everything())
 	if err != nil {
 		klog.Error(err)
 		return err
 	}
-
 	for _, roleBase := range roleBases {
 		var role iamv1alpha2.WorkspaceRole
-		if err = yaml.NewYAMLOrJSONDecoder(bytes.NewBuffer(roleBase.Role.Raw), 1024).Decode(&role); err == nil {
-			old, err := r.workspaceRoleLister.Get(fmt.Sprintf("%s-%s", workspace.Name, role.Name))
+		if err = yaml.NewYAMLOrJSONDecoder(bytes.NewBuffer(roleBase.Role.Raw), 1024).Decode(&role); err == nil && role.Kind == iamv1alpha2.ResourceKindWorkspaceRole {
+			roleName := fmt.Sprintf("%s-%s", workspace.Name, role.Name)
+			if role.Labels == nil {
+				role.Labels = make(map[string]string, 0)
+			}
+			// make sure workspace label always exist
+			role.Labels[tenantv1alpha1.WorkspaceLabel] = workspace.Name
+			role.Name = roleName
+			old, err := c.workspaceRoleLister.Get(roleName)
 			if err != nil {
 				if errors.IsNotFound(err) {
-					role.Name = fmt.Sprintf("%s-%s", workspace.Name, role.Name)
-					if role.Labels == nil {
-						role.Labels = make(map[string]string, 0)
-					}
-					role.Labels[tenantv1alpha1.WorkspaceLabel] = workspace.Name
-					_, err = r.ksClient.IamV1alpha2().WorkspaceRoles().Create(&role)
+					_, err = c.ksClient.IamV1alpha2().WorkspaceRoles().Create(&role)
 					if err != nil {
 						klog.Error(err)
 						return err
@@ -475,20 +389,92 @@ func (r *Controller) initRoles(workspace *tenantv1alpha2.WorkspaceTemplate) erro
 					continue
 				}
 			}
-
-			if !reflect.DeepEqual(role.Annotations, old.Annotations) ||
+			if !reflect.DeepEqual(role.Labels, old.Labels) ||
+				!reflect.DeepEqual(role.Annotations, old.Annotations) ||
 				!reflect.DeepEqual(role.Rules, old.Rules) {
 				updated := old.DeepCopy()
+				updated.Labels = role.Labels
 				updated.Annotations = role.Annotations
 				updated.Rules = role.Rules
-
-				_, err = r.ksClient.IamV1alpha2().WorkspaceRoles().Update(updated)
+				_, err = c.ksClient.IamV1alpha2().WorkspaceRoles().Update(updated)
 				if err != nil {
 					klog.Error(err)
 					return err
 				}
 			}
 		}
+	}
+	return nil
+}
+
+func (c *controller) resetWorkspaceOwner(workspace *tenantv1alpha2.WorkspaceTemplate) error {
+	workspace = workspace.DeepCopy()
+	workspace.Spec.Template.Spec.Manager = ""
+	_, err := c.ksClient.TenantV1alpha2().WorkspaceTemplates().Update(workspace)
+	klog.V(4).Infof("update workspace after manager has been deleted")
+	return err
+}
+
+func (c *controller) initManagerRoleBinding(workspace *tenantv1alpha2.WorkspaceTemplate) error {
+	manager := workspace.Spec.Template.Spec.Manager
+	if manager == "" {
+		return nil
+	}
+
+	user, err := c.ksClient.IamV1alpha2().Users().Get(manager, metav1.GetOptions{})
+	if err != nil {
+		// skip if user has been deleted
+		if errors.IsNotFound(err) {
+			return c.resetWorkspaceOwner(workspace)
+		}
+		klog.Error(err)
+		return err
+	}
+
+	// skip if user has been deleted
+	if !user.DeletionTimestamp.IsZero() {
+		return c.resetWorkspaceOwner(workspace)
+	}
+
+	workspaceAdminRoleName := fmt.Sprintf(iamv1alpha2.WorkspaceAdminFormat, workspace.Name)
+	managerRoleBinding := &iamv1alpha2.WorkspaceRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("%s-%s", manager, workspaceAdminRoleName),
+			Labels: map[string]string{
+				tenantv1alpha1.WorkspaceLabel:  workspace.Name,
+				iamv1alpha2.UserReferenceLabel: manager,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: iamv1alpha2.SchemeGroupVersion.Group,
+			Kind:     iamv1alpha2.ResourceKindWorkspaceRole,
+			Name:     workspaceAdminRoleName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Name:     manager,
+				Kind:     iamv1alpha2.ResourceKindUser,
+				APIGroup: rbacv1.GroupName,
+			},
+		},
+	}
+	_, err = c.ksClient.IamV1alpha2().WorkspaceRoleBindings().Create(managerRoleBinding)
+	if err != nil {
+		if errors.IsAlreadyExists(err) {
+			return nil
+		}
+		klog.Error(err)
+		return err
+	}
+
+	return nil
+}
+
+func (c *controller) updateFederatedWorkspace(workspace *typesv1beta1.FederatedWorkspace) error {
+	_, err := c.ksClient.TypesV1beta1().FederatedWorkspaces().Update(workspace)
+	if err != nil {
+		klog.Error(err)
+		return err
 	}
 	return nil
 }

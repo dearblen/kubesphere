@@ -1,3 +1,19 @@
+/*
+Copyright 2020 KubeSphere Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package auditing
 
 import (
@@ -9,13 +25,15 @@ import (
 	"k8s.io/apiserver/pkg/apis/audit"
 	"k8s.io/apiserver/pkg/authentication/user"
 	k8srequest "k8s.io/apiserver/pkg/endpoints/request"
+	fakek8s "k8s.io/client-go/kubernetes/fake"
 	auditingv1alpha1 "kubesphere.io/kubesphere/pkg/apis/auditing/v1alpha1"
 	v1alpha12 "kubesphere.io/kubesphere/pkg/apiserver/auditing/v1alpha1"
 	"kubesphere.io/kubesphere/pkg/apiserver/request"
 	"kubesphere.io/kubesphere/pkg/client/clientset/versioned/fake"
-	ksinformers "kubesphere.io/kubesphere/pkg/client/informers/externalversions"
+	"kubesphere.io/kubesphere/pkg/informers"
 	"kubesphere.io/kubesphere/pkg/utils/iputil"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
@@ -36,13 +54,15 @@ func TestGetAuditLevel(t *testing.T) {
 		},
 	}
 
-	informer := ksinformers.NewSharedInformerFactory(fake.NewSimpleClientset(), noResyncPeriodFunc())
+	ksClient := fake.NewSimpleClientset()
+	k8sClient := fakek8s.NewSimpleClientset()
+	fakeInformerFactory := informers.NewInformerFactories(k8sClient, ksClient, nil, nil, nil, nil)
 
 	a := auditing{
-		lister: informer.Auditing().V1alpha1().Webhooks().Lister(),
+		webhookLister: fakeInformerFactory.KubeSphereSharedInformerFactory().Auditing().V1alpha1().Webhooks().Lister(),
 	}
 
-	err := informer.Auditing().V1alpha1().Webhooks().Informer().GetIndexer().Add(webhook)
+	err := fakeInformerFactory.KubeSphereSharedInformerFactory().Auditing().V1alpha1().Webhooks().Informer().GetIndexer().Add(webhook)
 	if err != nil {
 		panic(err)
 	}
@@ -63,13 +83,15 @@ func TestAuditing_Enabled(t *testing.T) {
 		},
 	}
 
-	informer := ksinformers.NewSharedInformerFactory(fake.NewSimpleClientset(), noResyncPeriodFunc())
+	ksClient := fake.NewSimpleClientset()
+	k8sClient := fakek8s.NewSimpleClientset()
+	fakeInformerFactory := informers.NewInformerFactories(k8sClient, ksClient, nil, nil, nil, nil)
 
 	a := auditing{
-		lister: informer.Auditing().V1alpha1().Webhooks().Lister(),
+		webhookLister: fakeInformerFactory.KubeSphereSharedInformerFactory().Auditing().V1alpha1().Webhooks().Lister(),
 	}
 
-	err := informer.Auditing().V1alpha1().Webhooks().Informer().GetIndexer().Add(webhook)
+	err := fakeInformerFactory.KubeSphereSharedInformerFactory().Auditing().V1alpha1().Webhooks().Informer().GetIndexer().Add(webhook)
 	if err != nil {
 		panic(err)
 	}
@@ -91,13 +113,15 @@ func TestAuditing_K8sAuditingEnabled(t *testing.T) {
 		},
 	}
 
-	informer := ksinformers.NewSharedInformerFactory(fake.NewSimpleClientset(), noResyncPeriodFunc())
+	ksClient := fake.NewSimpleClientset()
+	k8sClient := fakek8s.NewSimpleClientset()
+	fakeInformerFactory := informers.NewInformerFactories(k8sClient, ksClient, nil, nil, nil, nil)
 
 	a := auditing{
-		lister: informer.Auditing().V1alpha1().Webhooks().Lister(),
+		webhookLister: fakeInformerFactory.KubeSphereSharedInformerFactory().Auditing().V1alpha1().Webhooks().Lister(),
 	}
 
-	err := informer.Auditing().V1alpha1().Webhooks().Informer().GetIndexer().Add(webhook)
+	err := fakeInformerFactory.KubeSphereSharedInformerFactory().Auditing().V1alpha1().Webhooks().Informer().GetIndexer().Add(webhook)
 	if err != nil {
 		panic(err)
 	}
@@ -119,13 +143,15 @@ func TestAuditing_LogRequestObject(t *testing.T) {
 		},
 	}
 
-	informer := ksinformers.NewSharedInformerFactory(fake.NewSimpleClientset(), noResyncPeriodFunc())
+	ksClient := fake.NewSimpleClientset()
+	k8sClient := fakek8s.NewSimpleClientset()
+	fakeInformerFactory := informers.NewInformerFactories(k8sClient, ksClient, nil, nil, nil, nil)
 
 	a := auditing{
-		lister: informer.Auditing().V1alpha1().Webhooks().Lister(),
+		webhookLister: fakeInformerFactory.KubeSphereSharedInformerFactory().Auditing().V1alpha1().Webhooks().Lister(),
 	}
 
-	err := informer.Auditing().V1alpha1().Webhooks().Informer().GetIndexer().Add(webhook)
+	err := fakeInformerFactory.KubeSphereSharedInformerFactory().Auditing().V1alpha1().Webhooks().Informer().GetIndexer().Add(webhook)
 	if err != nil {
 		panic(err)
 	}
@@ -207,13 +233,15 @@ func TestAuditing_LogResponseObject(t *testing.T) {
 		},
 	}
 
-	informer := ksinformers.NewSharedInformerFactory(fake.NewSimpleClientset(), noResyncPeriodFunc())
+	ksClient := fake.NewSimpleClientset()
+	k8sClient := fakek8s.NewSimpleClientset()
+	fakeInformerFactory := informers.NewInformerFactories(k8sClient, ksClient, nil, nil, nil, nil)
 
 	a := auditing{
-		lister: informer.Auditing().V1alpha1().Webhooks().Lister(),
+		webhookLister: fakeInformerFactory.KubeSphereSharedInformerFactory().Auditing().V1alpha1().Webhooks().Lister(),
 	}
 
-	err := informer.Auditing().V1alpha1().Webhooks().Informer().GetIndexer().Add(webhook)
+	err := fakeInformerFactory.KubeSphereSharedInformerFactory().Auditing().V1alpha1().Webhooks().Informer().GetIndexer().Add(webhook)
 	if err != nil {
 		panic(err)
 	}
@@ -248,10 +276,10 @@ func TestAuditing_LogResponseObject(t *testing.T) {
 
 	e := a.LogRequestObject(req, info)
 
-	resp := &ResponseCapture{}
+	resp := NewResponseCapture(httptest.NewRecorder())
 	resp.WriteHeader(200)
 
-	a.LogResponseObject(e, resp, info)
+	a.LogResponseObject(e, resp)
 
 	expectedEvent := &v1alpha12.Event{
 		Event: audit.Event{
@@ -294,4 +322,30 @@ func TestAuditing_LogResponseObject(t *testing.T) {
 	}
 
 	assert.EqualValues(t, string(expectedBs), string(bs))
+}
+
+func TestResponseCapture_WriteHeader(t *testing.T) {
+	record := httptest.NewRecorder()
+	resp := NewResponseCapture(record)
+
+	resp.WriteHeader(404)
+
+	assert.EqualValues(t, 404, resp.StatusCode())
+	assert.EqualValues(t, 404, record.Code)
+}
+
+func TestResponseCapture_Write(t *testing.T) {
+
+	record := httptest.NewRecorder()
+	resp := NewResponseCapture(record)
+
+	body := []byte("123")
+
+	_, err := resp.Write(body)
+	if err != nil {
+		panic(err)
+	}
+
+	assert.EqualValues(t, body, resp.Bytes())
+	assert.EqualValues(t, body, record.Body.Bytes())
 }

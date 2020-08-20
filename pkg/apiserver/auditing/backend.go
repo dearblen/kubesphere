@@ -1,3 +1,19 @@
+/*
+Copyright 2020 KubeSphere Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package auditing
 
 import (
@@ -86,11 +102,13 @@ func (b *Backend) worker() {
 				<-b.semCh
 			}()
 
-			bs, err := json.Marshal(event)
+			bs, err := b.eventToBytes(event)
 			if err != nil {
-				klog.Errorf("json marshal error, %s", err)
+				klog.V(6).Infof("json marshal error, %s", err)
 				return
 			}
+
+			klog.V(8).Infof("%s", string(bs))
 
 			response, err := b.client.Post(b.url, "application/json", bytes.NewBuffer(bs))
 			if err != nil {
@@ -106,4 +124,22 @@ func (b *Backend) worker() {
 
 		go send(event)
 	}
+}
+
+func (b *Backend) eventToBytes(event *v1alpha1.EventList) ([]byte, error) {
+
+	bs, err := json.Marshal(event)
+	if err != nil {
+		// Normally, the serialization failure is caused by the failure of ResponseObject serialization.
+		// To ensure the integrity of the auditing event to the greatest extent,
+		// it is necessary to delete ResponseObject and and then try to serialize again.
+		if event.Items[0].ResponseObject != nil {
+			event.Items[0].ResponseObject = nil
+			return json.Marshal(event)
+		}
+
+		return nil, err
+	}
+
+	return bs, err
 }
